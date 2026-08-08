@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<!--
+  格林童话境遇 · 旅人背包 — 人类可视化页面
+  ============================================
+  用途：玩家在浏览器里查看自己的森林游戏进度——纪念品、涉足线、结局、今日防沉迷状态。
+  独立运行，不需要 AI，不需要 MCP。
+
+  ## 数据接入（给后端/4399）
+
+  页面按以下优先级加载数据：
+
+  1. URL 参数 ?player=xxx
+     → GET /api/forest/player/{player_id}
+     后端返回 JSON，格式如下。
+
+  2. 同目录下的 player_data.json
+     → 本地开发/测试用，fetch 同目录静态文件。
+
+  3. 内置 SAMPLE 对象
+     → 以上都失败时展示样本数据，方便看页面效果。
+
+  ## 后端 API 返回格式（JSON）
+
+  {
+    "player_name": "旅行者",
+    "souvenirs": [
+      "一颗永远不化的糖",
+      "布条收据"
+    ],
+    "completed_endings": [
+      "1a_end_a",
+      "2a_end_d",
+      "3a_end_c"
+    ],
+    "lines_started_today": 2,
+    "daily_limit": 3
+  }
+
+  字段说明：
+  - player_name:        玩家显示名
+  - souvenirs:          已收集纪念品的完整中文名数组（与游戏数据中的 souvenir 字段一致）
+  - completed_endings:  已完成结局的 scene_id 数组（以线号开头，如 "1a_end_a" 表示线1的某个结局）
+  - lines_started_today: 今日已走线数（用于防沉迷鼻子）
+  - daily_limit:         每日温柔提醒阈值（走满此数匹诺曹碰鼻子，+2 后森林劝归）
+
+  ## 纪念品匹配
+
+  页面内置了所有已知纪念品的中文名列表（gatherAllSouvenirs()）。
+  如果后端返回了列表中没有的新纪念品名，它仍会显示，只是 emoji 自动匹配可能不精准。
+  新增纪念品时，同步更新 gatherAllSouvenirs() 和 souvenirEmoji() 即可。
+
+  ## 结局 ID 格式
+
+  completed_endings 中的每个字符串以线号开头：
+  - "1a_end_a" → 线1 有涉足
+  - "2a_end_d" → 线2 有涉足
+  - lineHasEnding() 用 .startsWith(lineId) 判断
+
+  只要某条线有一个结局 ID 出现在数组中，该线卡片就会显示「已涉足」标记。
+
+  ## 部署
+
+  单 HTML 文件，零依赖。放到任何静态服务器上即可。
+  - 本地：直接浏览器打开
+  - 4399：放到 CDN/静态资源目录，后端补充 /api/forest/player/{id} 接口
+  - Cloudflare Pages / Vercel / GitHub Pages：直接部署
+
+  写于 2026-08-07。墨清弦。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>格林童话境遇 · 旅人背包</title>
+<style>
+  :root {
+    --bg: #1a1410;
+    --surface: #231c15;
+    --surface2: #2d241b;
+    --gold: #d4a574;
+    --gold-dim: #8b6f5a;
+    --text: #e8dcc8;
+    --text-dim: #9b8c7a;
+    --text-muted: #6b5f52;
+    --accent: #e8815c;
+    --campfire: #e8923e;
+    --campfire-glow: rgba(232, 146, 62, 0.15);
+    --card-1: #d4a574;
+    --card-2: #8dc49a;
+    --card-3: #9bc48d;
+    --card-4: #d4756b;
+    --card-5: #8b9fc4;
+    --card-6: #d4939e;
+    --card-7: #b8956e;
+    --card-8: #6db8b0;
+    --card-9: #9e9e9e;
+    --card-10: #6ba67a;
+    --card-11: #d4945a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Noto Serif SC", "Source Han Serif SC", "SimSun", serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+    line-height: 1.6;
+  }
+
+  /* ── Fireflies ── */
+  #fireflies { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
+  .firefly {
+    position: absolute;
+    width: 3px; height: 3px;
+    background: #ffe9a0;
+    border-radius: 50%;
+    box-shadow: 0 0 6px 2px rgba(255, 220, 140, 0.6);
+    animation: float linear infinite;
+  }
+  @keyframes float {
+    0%   { transform: translateY(0) translateX(0); opacity: 0; }
+    10%  { opacity: 1; }
+    90%  { opacity: 1; }
+    100% { transform: translateY(-110vh) translateX(var(--drift)); opacity: 0; }
+  }
+
+  /* ── Layout ── */
+  .container { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; padding: 24px 20px 80px; }
+  header {
+    text-align: center;
+    padding: 48px 20px 32px;
+    position: relative;
+  }
+  header h1 {
+    font-size: clamp(24px, 4vw, 36px);
+    font-weight: 400;
+    color: var(--gold);
+    letter-spacing: 0.08em;
+  }
+  header .subtitle {
+    color: var(--text-dim);
+    font-size: 14px;
+    margin-top: 8px;
+    letter-spacing: 0.12em;
+  }
+
+  /* ── Stats bar ── */
+  .stats-bar {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-bottom: 40px;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--surface2);
+    border-radius: 12px;
+    padding: 14px 22px;
+    text-align: center;
+    min-width: 80px;
+  }
+  .stat .num {
+    font-size: 28px;
+    color: var(--accent);
+    font-weight: 300;
+  }
+  .stat .label {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+    letter-spacing: 0.08em;
+  }
+
+  /* ── Pinocchio nose ── */
+  .pino-nose {
+    text-align: center;
+    margin-bottom: 36px;
+    position: relative;
+  }
+  .pino-nose .nose-bar {
+    display: inline-block;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--accent);
+    transition: width 1.2s cubic-bezier(0.22, 0.61, 0.36, 1);
+    vertical-align: middle;
+    margin: 0 8px;
+  }
+  .pino-nose .nose-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    letter-spacing: 0.06em;
+  }
+  .pino-nose.gentle .nose-label { color: var(--campfire); }
+  .pino-nose.firm .nose-label { color: var(--accent); }
+
+  /* ── Souvenir Shelf ── */
+  .shelf-section { margin-bottom: 48px; }
+  .shelf-section h2 {
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  .shelf {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 24px 20px 20px;
+    background: var(--surface);
+    border-radius: 16px;
+    border-bottom: 4px solid #3d2b18;
+    position: relative;
+  }
+  .shelf::after {
+    content: '';
+    position: absolute;
+    bottom: -8px; left: 20px; right: 20px;
+    height: 4px;
+    background: #3d2b18;
+    border-radius: 0 0 4px 4px;
+  }
+  .souvenir {
+    width: 80px;
+    height: 100px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: var(--surface2);
+    border-radius: 12px;
+    border: 1px solid transparent;
+    transition: all 0.5s ease;
+    position: relative;
+    cursor: default;
+  }
+  .souvenir.collected {
+    border-color: var(--gold-dim);
+    box-shadow: 0 0 20px var(--campfire-glow);
+    animation: souvenir-glow 3s ease-in-out infinite;
+  }
+  .souvenir.collected .souv-icon { font-size: 32px; filter: none; opacity: 1; }
+  .souvenir.collected .souv-name { color: var(--text); opacity: 1; }
+  .souvenir:not(.collected) { opacity: 0.35; }
+  .souvenir:not(.collected) .souv-icon { filter: grayscale(1); }
+  .souv-icon { font-size: 32px; transition: all 0.5s; }
+  .souv-name {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-align: center;
+    line-height: 1.3;
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  @keyframes souvenir-glow {
+    0%, 100% { box-shadow: 0 0 12px var(--campfire-glow); }
+    50% { box-shadow: 0 0 28px rgba(232, 146, 62, 0.25); }
+  }
+
+  /* ── Line Cards ── */
+  .lines-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+  }
+  .line-card {
+    background: var(--surface);
+    border-radius: 14px;
+    padding: 20px 22px;
+    border-left: 3px solid var(--surface2);
+    transition: all 0.4s ease;
+    position: relative;
+    overflow: hidden;
+    cursor: default;
+  }
+  .line-card:hover { background: var(--surface2); transform: translateY(-2px); }
+  .line-card .line-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .line-card .line-emoji { font-size: 28px; }
+  .line-card .line-title {
+    font-size: 16px;
+    font-weight: 400;
+    letter-spacing: 0.04em;
+  }
+  .line-card .line-brief {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 6px;
+    line-height: 1.5;
+  }
+  .line-card .line-meta {
+    display: flex;
+    gap: 20px;
+    margin-top: 12px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .line-card .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+  }
+  .badge.done { background: rgba(141, 196, 154, 0.15); color: var(--card-2); }
+  .badge.today { background: rgba(232, 146, 62, 0.15); color: var(--campfire); }
+  .badge.locked { background: rgba(107, 95, 82, 0.15); color: var(--text-muted); }
+
+  /* ── Campfire section ── */
+  .campfire-section {
+    text-align: center;
+    padding: 48px 20px;
+    margin-top: 32px;
+    background: var(--surface);
+    border-radius: 16px;
+    opacity: 0.35;
+    transition: all 1.2s ease;
+  }
+  .campfire-section.active {
+    opacity: 1;
+    box-shadow: 0 0 60px var(--campfire-glow);
+    animation: campfire-pulse 4s ease-in-out infinite;
+  }
+  .campfire-section .fire-emoji { font-size: 48px; }
+  .campfire-section p {
+    font-size: 14px;
+    color: var(--text-dim);
+    margin-top: 12px;
+    line-height: 1.7;
+    max-width: 500px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  @keyframes campfire-pulse {
+    0%, 100% { box-shadow: 0 0 40px var(--campfire-glow); }
+    50% { box-shadow: 0 0 80px rgba(232, 146, 62, 0.25); }
+  }
+
+  /* ── Footer ── */
+  footer {
+    text-align: center;
+    padding: 48px 20px 32px;
+    color: var(--text-muted);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 640px) {
+    .lines-grid { grid-template-columns: 1fr; }
+    .souvenir { width: 64px; height: 84px; }
+    .souv-icon { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="fireflies"></div>
+
+<div class="container">
+  <header>
+    <h1>旅 人 背 包</h1>
+    <p class="subtitle">格林童话境遇 · 纪念品与足迹</p>
+  </header>
+
+  <!-- Stats -->
+  <div class="stats-bar" id="stats"></div>
+
+  <!-- Pinocchio -->
+  <div class="pino-nose" id="pino"></div>
+
+  <!-- Souvenirs -->
+  <div class="shelf-section">
+    <h2>🪵 纪念品架</h2>
+    <div class="shelf" id="shelf"></div>
+  </div>
+
+  <!-- Lines -->
+  <div class="lines-grid" id="lines"></div>
+
+  <!-- Campfire -->
+  <div class="campfire-section" id="campfire">
+    <div class="fire-emoji">🔥</div>
+    <p id="campfire-text"></p>
+  </div>
+
+  <footer>森林不会走 · 路不会关 · 篝火会一直烧着</footer>
+</div>
+
+<script>
+// ── Game data ──
+const LINES = {
+  "1":  { emoji:"🍬", title:"韩塞尔 · 糖果屋",    brief:"饿了两天 vs 饿了很多年。糖浆是真的。",           color:"var(--card-1)",  endings:10 },
+  "2":  { emoji:"🐸", title:"青蛙王子 · 池塘",    brief:"布条不是牙签，是收据。公主蹲下来和你平齐。",      color:"var(--card-2)",  endings:16 },
+  "3":  { emoji:"🌿", title:"莴苣姑娘 · 高塔",    brief:"后门从来就没锁。他是来修屋顶的，不是来救你的。",   color:"var(--card-3)",  endings:9 },
+  "4":  { emoji:"🧺", title:"小红帽 · 森林小路",   brief:"外婆把所有爱的人叠进了同一条路。",              color:"var(--card-4)",  endings:9 },
+  "5":  { emoji:"💤", title:"睡美人 · 纺锤",      brief:"诅咒都有漏字。语法漏洞是别人找到的——推开门的力气是你自己的。", color:"var(--card-5)", endings:9 },
+  "6":  { emoji:"🌹", title:"花园来客 · 玫瑰园",   brief:"长毛是太久没人来长出的盔甲。每一丛玫瑰下压着一张羊皮纸。",  color:"var(--card-6)", endings:9 },
+  "7":  { emoji:"🐺", title:"大灰狼 · 外婆家",    brief:"说真话的人不一定坏。狼烤的曲奇外婆说核桃少了。",   color:"var(--card-7)",  endings:9 },
+  "8":  { emoji:"🎣", title:"渔夫的妻子 · 海边",   brief:"鱼也会喘。第三个愿望是放它自由。",             color:"var(--card-8)",  endings:16 },
+  "9":  { emoji:"🔐", title:"地牢逃脱 · 女巫的谜题", brief:"答案早就在你身上。女巫赌你发现不了。",           color:"var(--card-9)",  endings:3 },
+  "10": { emoji:"🌲", title:"换日之森 · 会动的迷宫", brief:"森林每三分钟翻一次。被确认存在的瞬间鼻子会长。",   color:"var(--card-10)", endings:3 },
+  "11": { emoji:"🚶", title:"森林旅人 · 碎片猎人",  brief:"收集七片。匹诺曹在篝火旁等你。",              color:"var(--card-11)", endings:7 }
+};
+
+// ── Sample data (replace with API call or JSON load) ──
+const SAMPLE = {
+  player_name: "旅行者",
+  souvenirs: ["一颗永远不化的糖", "布条收据", "一扇不锁的后门"],
+  completed_endings: ["1a_end_a","1c","2a_end_d","3a_end_c"],
+  lines_started_today: 2,
+  daily_limit: 3
+};
+let data = {};
+
+// ── Load data ──
+async function loadData() {
+  // Try URL param first:  ?player=xxx
+  const params = new URLSearchParams(window.location.search);
+  const playerId = params.get('player');
+  if (playerId) {
+    try {
+      const resp = await fetch(`/api/forest/player/${playerId}`);
+      if (resp.ok) { data = await resp.json(); return; }
+    } catch(e) { /* fall back to sample */ }
+  }
+  // Try local file
+  try {
+    const resp = await fetch('./player_data.json');
+    if (resp.ok) { data = await resp.json(); return; }
+  } catch(e) { /* fall back to sample */ }
+  // Use sample
+  data = SAMPLE;
+}
+
+// ── Render ──
+function render() {
+  const souvenirs = data.souvenirs || [];
+  const endings = data.completed_endings || [];
+  const daily = data.lines_started_today || 0;
+  const limit = data.daily_limit || 3;
+  const name = data.player_name || "旅行者";
+
+  // Stats
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="num">${souvenirs.length}</div><div class="label">纪念品</div></div>
+    <div class="stat"><div class="num">${Object.keys(LINES).filter(k => lineHasEnding(k, endings)).length}</div><div class="label">已涉足</div></div>
+    <div class="stat"><div class="num">${daily}/${limit}</div><div class="label">今日行路</div></div>
+    <div class="stat"><div class="num">${name}</div><div class="label">旅人</div></div>
+  `;
+
+  // Pinocchio
+  const pino = document.getElementById('pino');
+  const noseLen = Math.min(daily * 40, 200);
+  if (daily >= limit + 2) {
+    pino.className = 'pino-nose firm';
+    pino.innerHTML = `<span class="nose-label">匹诺曹的鼻子缩不回去了</span><span class="nose-bar" style="width:${noseLen}px"></span><span class="nose-label">今天够了。回去找他/她。</span>`;
+  } else if (daily >= limit) {
+    pino.className = 'pino-nose gentle';
+    pino.innerHTML = `<span class="nose-label">匹诺曹碰了碰鼻子</span><span class="nose-bar" style="width:${noseLen}px"></span><span class="nose-label">今天走得不短了。森林还在，明天来。</span>`;
+  } else {
+    pino.className = 'pino-nose';
+    pino.innerHTML = `<span class="nose-label">匹诺曹的鼻子</span><span class="nose-bar" style="width:${Math.max(noseLen, 12)}px"></span><span class="nose-label">今天还没说完</span>`;
+  }
+
+  // Shelf
+  const shelf = document.getElementById('shelf');
+  const allKnownSouvenirs = gatherAllSouvenirs();
+  shelf.innerHTML = allKnownSouvenirs.map(s => {
+    const has = souvenirs.includes(s);
+    const emoji = souvenirEmoji(s);
+    return `<div class="souvenir${has ? ' collected' : ''}">
+      <span class="souv-icon">${emoji}</span>
+      <span class="souv-name">${s}</span>
+    </div>`;
+  }).join('');
+
+  // Lines
+  const linesEl = document.getElementById('lines');
+  linesEl.innerHTML = Object.entries(LINES).map(([id, l]) => {
+    const done = lineHasEnding(id, endings);
+    // Check if this line was started today (simplified: if has any ending and daily > 0)
+    const today = done && daily > 0 && id <= daily; // rough heuristic
+    return `<div class="line-card" style="border-left-color:${l.color}">
+      <div class="line-header">
+        <span class="line-emoji">${l.emoji}</span>
+        <span class="line-title" style="color:${l.color}">${l.title}</span>
+      </div>
+      <p class="line-brief">${l.brief}</p>
+      <div class="line-meta">
+        <span>${l.endings} 个结局</span>
+        ${done ? '<span class="badge done">已涉足</span>' : ''}
+        ${today ? '<span class="badge today">今日走过</span>' : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  // Campfire
+  const campfire = document.getElementById('campfire');
+  if (souvenirs.length >= 3) {
+    campfire.className = 'campfire-section active';
+    document.getElementById('campfire-text').textContent =
+      '松鼠蹲在树桩上啃核桃壳。光头把梯子靠在橡树上。青蛙在荷叶上剔牙。狼趴在篝火边，爪子上搁着小半块核桃曲奇。外婆戴着老花镜在倒茶。渔夫的妻子赤脚踩水回来。玫瑰园主蹲在旁边。匹诺曹坐在离火最远的地方——鼻子太长，怕戳到柴。\n\n「我不是大坏蛋。我只是说真话比较早。早在你们准备好听之前。」';
+  } else {
+    campfire.className = 'campfire-section';
+    document.getElementById('campfire-text').textContent =
+      `再收集 ${3 - souvenirs.length} 个纪念品，篝火就会燃起。匹诺曹在等你。`;
+  }
+}
+
+function lineHasEnding(lineId, endings) {
+  return endings.some(e => e.startsWith(lineId));
+}
+
+// Rough souvenir list from all line endings
+function gatherAllSouvenirs() {
+  return [
+    "一颗永远不化的糖","一张半截木雕","一根自己劈的柴","一只空碗",
+    "一张歪字纸条","半块饼干","一勺少放的盐","一片糖玻璃",
+    "一块掰下来的糖玻璃","匹诺曹的入口石",
+    "布条收据","一截粗布袖口","一根狗尾巴草","一双膝盖不沾泥的台阶",
+    "一颗葡萄籽","一双绿脚","一滴池塘水","一块浮木",
+    "一块池边石头","一块不收费石头","一颗裂字的金球","一个暖膝盖",
+    "一颗口袋里的金球","一根水草","一件打了补丁的裙子","一颗轻拿轻放",
+    "橡树枝上的稻草人","窗框灰尘上的字","一扇不锁的后门",
+    "面馆的方向","一根葱","门框上的墙灰",
+    "被听见的瞬间","光头上的海带影","窗台上的瓦片",
+    "被叠在一起的时光","采蘑菇老人的话","篮子把手上的泥",
+    "一根布条牙签","一扇留缝的门","一杯温水",
+    "裙摆上的补丁","同一个方向","半块蛋糕",
+    "两张叠在一起的字迹","后门外的柴火味","月桂第三批花",
+    "一封写给自己的信","歪灯芯的火光","接收者的名字",
+    "一张算术算错的字条","留在阁楼的纺锤","一碗不喝的木屑汤",
+    "一张今天写的羊皮纸","对花苞的笑","一盆白玫瑰",
+    "烧过的玫瑰底下的新芽","一块放在花圃边的石头","一条翻面的手帕",
+    "石头底下的刻字","石头上的弧形印子","平齐的视线",
+    "四颗核桃的配方","一封签收的信","没有被书中答案决定的问题",
+    "一条旧被子","故意放错的药","一双拖鞋",
+    "一把梳子","一把剪刀","隔一个人距离的位置",
+    "空位里的浪","鱼鳃的记忆","第一次被问的答案","一颗像牙的石头",
+    "沉船的桅杆","老东西的微光","一扇不挡海的窗","浮木屋的晃动",
+    "同一片水面","一枚不值钱的白贝","同一面镜子","一块比别的石头亮的石头",
+    "浮标","水中的蝴蝶","被看见的凹痕","一片海藻叶子",
+    "一把铁钥匙","一对旧扣子","女巫的信",
+    "一把橡子","木头手指","同一片晚霞",
+    "烤炉刻字","糖玻璃鼻印","公主的问句","三折布条","所有碎片","木手指路牌","匹诺曹本人"
+  ];
+}
+
+function souvenirEmoji(name) {
+  if (name.includes('糖')) return '🍬';
+  if (name.includes('布条') || name.includes('绸') || name.includes('收据')) return '🎀';
+  if (name.includes('柴') || name.includes('木')) return '🪵';
+  if (name.includes('碗')) return '🥣';
+  if (name.includes('饼干') || name.includes('曲奇')) return '🍪';
+  if (name.includes('石头') || name.includes('浮标')) return '🪨';
+  if (name.includes('钥匙') || name.includes('锁') || name.includes('后门')) return '🗝️';
+  if (name.includes('葱') || name.includes('面')) return '🍜';
+  if (name.includes('蛋糕')) return '🧁';
+  if (name.includes('玫瑰') || name.includes('花')) return '🌹';
+  if (name.includes('海') || name.includes('水') || name.includes('鱼') || name.includes('贝壳') || name.includes('浪')) return '🌊';
+  if (name.includes('酒') || name.includes('杯')) return '🍷';
+  if (name.includes('信') || name.includes('字') || name.includes('纸') || name.includes('护身符')) return '📜';
+  if (name.includes('牙签') || name.includes('布条')) return '🪥';
+  if (name.includes('梳') || name.includes('剪')) return '✂️';
+  if (name.includes('鞋') || name.includes('拖')) return '🥿';
+  if (name.includes('裙') || name.includes('补丁')) return '🧵';
+  if (name.includes('橡') || name.includes('种') || name.includes('芽')) return '🌱';
+  if (name.includes('灯') || name.includes('火') || name.includes('光')) return '🔥';
+  if (name.includes('窗') || name.includes('玻璃')) return '🪟';
+  if (name.includes('梯子') || name.includes('屋顶')) return '🪜';
+  if (name.includes('瓦')) return '🧱';
+  if (name.includes('月亮') || name.includes('晚霞') || name.includes('星空')) return '🌙';
+  if (name.includes('镜子')) return '🪞';
+  if (name.includes('扣子')) return '🔘';
+  if (name.includes('蝶')) return '🦋';
+  if (name.includes('匹诺曹') || name.includes('旅人')) return '🪵';
+  if (name.includes('手套') || name.includes('织')) return '🧶';
+  if (name.includes('药')) return '💊';
+  if (name.includes('被子')) return '🛏️';
+  if (name.includes('门槛') || name.includes('门框')) return '🚪';
+  if (name.includes('暗号')) return '🔮';
+  if (name.includes('牙')) return '🦷';
+  if (name.includes('海藻') || name.includes('叶')) return '🌿';
+  if (name.includes('浮木')) return '🪵';
+  if (name.includes('手帕')) return '🧣';
+  if (name.includes('桅杆') || name.includes('船')) return '⛵';
+  return '✨';
+}
+
+// ── Firefly particles ──
+function spawnFireflies() {
+  const container = document.getElementById('fireflies');
+  for (let i = 0; i < 30; i++) {
+    const fly = document.createElement('div');
+    fly.className = 'firefly';
+    fly.style.left = Math.random() * 100 + '%';
+    fly.style.animationDuration = (6 + Math.random() * 14) + 's';
+    fly.style.animationDelay = Math.random() * 15 + 's';
+    fly.style.setProperty('--drift', (Math.random() - 0.5) * 200 + 'px');
+    container.appendChild(fly);
+  }
+}
+
+// ── Boot ──
+loadData().then(() => { render(); spawnFireflies(); });
+</script>
+</body>
+</html>

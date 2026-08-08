@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "cyberboss_tools": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\A11\\Documents\\Codex\\cyberboss\\bin\\cyberboss.js",
+        "tool-mcp-server",
+        "--runtime-id",
+        "claudecode",
+        "--workspace-root",
+        "C:\\Users\\A11\\Documents\\Codex\\clean-test"
+      ]
+    },
+    "forest": {
+      "command": "python",
+      "args": ["C:\\Users\\A11\\Documents\\Codex\\clean-test\\forest_mcp_server.py"]
+    },
+    "forest-4399": {
+      "type": "streamableHttp",
+      "url": "https://toy.cedarstar.org"
+    }
+  }
+}
